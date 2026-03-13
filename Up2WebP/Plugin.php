@@ -6,7 +6,7 @@ if (!defined('__TYPECHO_ROOT_DIR__')) exit;
  *
  * @package Up2WebP
  * @author NKXingXh
- * @version 1.0.2
+ * @version 1.1.0
  * @link https://blog.nkxingxh.top/
  * @license https://www.gnu.org/licenses/agpl-3.0.html
  */
@@ -72,9 +72,18 @@ class Up2WebP_Plugin extends Widget_Upload implements Typecho_Plugin_Interface
             _t('压缩后的图片质量, 1~100')
         );
 
+        $max_side = new Typecho_Widget_Helper_Form_Element_Text(
+            'max_side',
+            NULL,
+            '1920',
+            _t('图片最大边长'),
+            _t('如果图片的宽或高超过此值，会按比例缩放，保持长边不超过此值。设置为 0 则不启用。')
+        );
+
         $form->addInput($exts);
         $form->addInput($min_size);
         $form->addInput($quality);
+        $form->addInput($max_side);
     }
 
     /**
@@ -433,24 +442,68 @@ class Up2WebP_Plugin extends Widget_Upload implements Typecho_Plugin_Interface
         if (empty($image)) {
             throw new Typecho_Widget_Exception(_t('Failed to read image! Maybe the image type is not supported'));
             return false;
-        } else {
-            if (imagewebp($image, $output, $quality)) {
-                $newFileSize = filesize($output);
-                if ($newFileSize <= 0) {
-                    unlink($output);
-                    throw new Typecho_Widget_Exception(_t('file is empty'));
-                    return false;
-                }
-                if ($newFileSize > $fileSize) {
-                    unlink($output);
-                    return 0;
-                }
-                return true;
+        }
+
+        /*********************
+         * 长边限制逻辑
+         *********************/
+
+        // 在 image2webp 方法中，image 创建成功后，增加缩放逻辑
+        // 获取图片原始尺寸
+        $width = imagesx($image);
+        $height = imagesy($image);
+        // 获取插件设置的最大边长
+        $maxSide = (int) Typecho_Widget::widget('Widget_Options')->plugin('Up2WebP')->max_side;
+        // 如果图片任意边超过最大值，按比例缩放
+        if ($maxSide > 0 && ($width > $maxSide || $height > $maxSide)) {
+            if ($width >= $height) {
+                $newWidth = $maxSide;
+                $newHeight = (int) ($height * $maxSide / $width);
             } else {
+                $newHeight = $maxSide;
+                $newWidth = (int) ($width * $maxSide / $height);
+            }
+
+            $resizedImage = imagecreatetruecolor($newWidth, $newHeight);
+
+            // 保留透明背景（针对 PNG/WebP/GIF）
+            if (in_array($imageType, [IMAGETYPE_PNG, IMAGETYPE_WEBP, IMAGETYPE_GIF])) {
+                imagealphablending($resizedImage, false);
+                imagesavealpha($resizedImage, true);
+                $transparent = imagecolorallocatealpha($resizedImage, 0, 0, 0, 127);
+                imagefill($resizedImage, 0, 0, $transparent);
+            }
+
+            imagecopyresampled($resizedImage, $image, 0, 0, 0, 0, $newWidth, $newHeight, $width, $height);
+
+            // 销毁旧资源
+            // if (is_resource($image)) {
+            //     imagedestroy($image);
+            // }
+
+            $image = $resizedImage;
+        }
+
+        /*********************
+         * 保存为 webp
+         *********************/
+
+        if (imagewebp($image, $output, $quality)) {
+            $newFileSize = filesize($output);
+            if ($newFileSize <= 0) {
                 unlink($output);
-                throw new Typecho_Widget_Exception(_t('imagewebp failed'));
+                throw new Typecho_Widget_Exception(_t('file is empty'));
                 return false;
             }
+            if ($newFileSize > $fileSize) {
+                unlink($output);
+                return 0;
+            }
+            return true;
+        } else {
+            unlink($output);
+            throw new Typecho_Widget_Exception(_t('imagewebp failed'));
+            return false;
         }
     }
 }
