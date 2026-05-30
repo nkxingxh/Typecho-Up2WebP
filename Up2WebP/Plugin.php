@@ -6,7 +6,7 @@ if (!defined('__TYPECHO_ROOT_DIR__')) exit;
  *
  * @package Up2WebP
  * @author NKXingXh
- * @version 1.1.0
+ * @version 1.2.0
  * @link https://blog.nkxingxh.top/
  * @license https://www.gnu.org/licenses/agpl-3.0.html
  */
@@ -72,17 +72,30 @@ class Up2WebP_Plugin extends Widget_Upload implements Typecho_Plugin_Interface
             _t('压缩后的图片质量, 1~100')
         );
 
+        $resize_mode = new Typecho_Widget_Helper_Form_Element_Radio(
+            'resize_mode',
+            array(
+                'none' => _t('不启用'),
+                'long' => _t('长边'),
+                'short' => _t('短边')
+            ),
+            'long',
+            _t('边长控制模式'),
+            _t('选择缩放时参考的边。长边：限制图片较长的一边不超过最大边长；短边：限制图片较短的一边不超过最大边长；不启用：不进行缩放。')
+        );
+
         $max_side = new Typecho_Widget_Helper_Form_Element_Text(
             'max_side',
             NULL,
             '1920',
             _t('图片最大边长'),
-            _t('如果图片的宽或高超过此值，会按比例缩放，保持长边不超过此值。设置为 0 则不启用。')
+            _t('当边长控制模式不为“不启用”时，限制图片的参考边不超过此值。设置为 0 则无论模式如何均不缩放。')
         );
 
         $form->addInput($exts);
         $form->addInput($min_size);
         $form->addInput($quality);
+        $form->addInput($resize_mode);
         $form->addInput($max_side);
     }
 
@@ -263,7 +276,7 @@ class Up2WebP_Plugin extends Widget_Upload implements Typecho_Plugin_Interface
                 $result = self::image2webp($path, $path, $ext);
                 if (!$result) return false;
                 $up2webp = $result === true;
-                //这里直接替换了，不存在“老文件”，不需要额外操作
+                //这里直接替换了，不存在"老文件"，不需要额外操作
             }
         } elseif (isset($file['bits'])) {
             @unlink($path);
@@ -277,7 +290,7 @@ class Up2WebP_Plugin extends Widget_Upload implements Typecho_Plugin_Interface
                 $result = self::image2webp($path, $path, $ext);
                 if (!$result) return false;
                 $up2webp = $result === true;
-                //这里直接替换了，不存在“老文件”，不需要额外操作
+                //这里直接替换了，不存在"老文件"，不需要额外操作
             }
         } else {
             return false;
@@ -445,43 +458,69 @@ class Up2WebP_Plugin extends Widget_Upload implements Typecho_Plugin_Interface
         }
 
         /*********************
-         * 长边限制逻辑
+         * 边长限制逻辑
          *********************/
 
-        // 在 image2webp 方法中，image 创建成功后，增加缩放逻辑
         // 获取图片原始尺寸
         $width = imagesx($image);
         $height = imagesy($image);
-        // 获取插件设置的最大边长
-        $maxSide = (int) Typecho_Widget::widget('Widget_Options')->plugin('Up2WebP')->max_side;
-        // 如果图片任意边超过最大值，按比例缩放
-        if ($maxSide > 0 && ($width > $maxSide || $height > $maxSide)) {
-            if ($width >= $height) {
-                $newWidth = $maxSide;
-                $newHeight = (int) ($height * $maxSide / $width);
-            } else {
-                $newHeight = $maxSide;
-                $newWidth = (int) ($width * $maxSide / $height);
+
+        // 获取插件设置
+        $pluginOptions = Typecho_Widget::widget('Widget_Options')->plugin('Up2WebP');
+        $maxSide = (int) $pluginOptions->max_side;
+        $resizeMode = isset($pluginOptions->resize_mode) ? $pluginOptions->resize_mode : 'long';
+
+        // 如果边长控制模式不是"不启用"，且最大边长大于0，则进行缩放
+        if ($resizeMode != 'none' && $maxSide > 0) {
+            $needResize = false;
+
+            if ($resizeMode == 'long') {
+                // 长边模式：检查最长边是否超过最大边长
+                if ($width > $maxSide || $height > $maxSide) {
+                    $needResize = true;
+                    if ($width >= $height) {
+                        $newWidth = $maxSide;
+                        $newHeight = (int) ($height * $maxSide / $width);
+                    } else {
+                        $newHeight = $maxSide;
+                        $newWidth = (int) ($width * $maxSide / $height);
+                    }
+                }
+            } elseif ($resizeMode == 'short') {
+                // 短边模式：检查最短边是否超过最大边长
+                $shortSide = min($width, $height);
+                if ($shortSide > $maxSide) {
+                    $needResize = true;
+                    if ($width <= $height) {
+                        $newWidth = $maxSide;
+                        $newHeight = (int) ($height * $maxSide / $width);
+                    } else {
+                        $newHeight = $maxSide;
+                        $newWidth = (int) ($width * $maxSide / $height);
+                    }
+                }
             }
 
-            $resizedImage = imagecreatetruecolor($newWidth, $newHeight);
+            if ($needResize) {
+                $resizedImage = imagecreatetruecolor($newWidth, $newHeight);
 
-            // 保留透明背景（针对 PNG/WebP/GIF）
-            if (in_array($imageType, [IMAGETYPE_PNG, IMAGETYPE_WEBP, IMAGETYPE_GIF])) {
-                imagealphablending($resizedImage, false);
-                imagesavealpha($resizedImage, true);
-                $transparent = imagecolorallocatealpha($resizedImage, 0, 0, 0, 127);
-                imagefill($resizedImage, 0, 0, $transparent);
+                // 保留透明背景（针对 PNG/WebP/GIF）
+                if (in_array($imageType, [IMAGETYPE_PNG, IMAGETYPE_WEBP, IMAGETYPE_GIF])) {
+                    imagealphablending($resizedImage, false);
+                    imagesavealpha($resizedImage, true);
+                    $transparent = imagecolorallocatealpha($resizedImage, 0, 0, 0, 127);
+                    imagefill($resizedImage, 0, 0, $transparent);
+                }
+
+                imagecopyresampled($resizedImage, $image, 0, 0, 0, 0, $newWidth, $newHeight, $width, $height);
+
+                // 销毁旧资源
+                // if (is_resource($image)) {
+                //     imagedestroy($image);
+                // }
+
+                $image = $resizedImage;
             }
-
-            imagecopyresampled($resizedImage, $image, 0, 0, 0, 0, $newWidth, $newHeight, $width, $height);
-
-            // 销毁旧资源
-            // if (is_resource($image)) {
-            //     imagedestroy($image);
-            // }
-
-            $image = $resizedImage;
         }
 
         /*********************
